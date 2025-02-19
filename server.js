@@ -12,7 +12,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const secretKey = process.env.JWT_SECRET || "salainen_avain"; // JWT-salasana
+// const secretKey = process.env.JWT_SECRET || "salainen_avain"; // JWT-salasana
+
+const secretKey = process.env.JWT_SECRET;
+if (!secretKey) {
+    console.error("❌ JWT_SECRET puuttuu ympäristömuuttujista!");
+    process.exit(1);
+}
 
 // Luo tietokantayhteys Renderiin
 const pool = new Pool({
@@ -134,6 +140,19 @@ app.get('/users', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error("❌ Virhe haettaessa käyttäjiä:", error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// **Hae kirjautunut käyttäjä (/me-reitti)**
+app.get('/me', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name, email FROM public."users" WHERE id = $1', [req.user.id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Käyttäjää ei löydy" });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: "Virhe käyttäjän hakemisessa" });
   }
 });
 
