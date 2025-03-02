@@ -183,6 +183,90 @@ app.post('/users', [
   }
 });
 
+// **Lisää käyttäjän tulot ja menot**
+app.post('/api/budgets', authenticateToken, async (req, res) => {
+  try {
+      // Haetaan tiedot pyynnöstä
+      const { month, year, income, actualIncome, expenses } = req.body;
+      const user_id = req.user.id; // Haetaan käyttäjän ID tokenista
+
+      if (!user_id) {
+          return res.status(400).json({ success: false, error: "Käyttäjän ID puuttuu" });
+      }
+
+      // Tarkista, onko käyttäjällä jo budjetti tälle kuukaudelle ja vuodelle
+      const existingBudget = await pool.query(
+        'SELECT * FROM budgets WHERE user_id = $1 AND kuukausi = $2 AND vuosi = $3',
+        [user_id, month, year]
+      );
+
+      if (existingBudget.rows.length > 0) {
+        return res.status(400).json({ success: false, error: "Budjetti tälle kuukaudelle on jo olemassa" });
+      }
+
+      // Lasketaan menojen kokonaismäärä ja pyöristetään 2 desimaaliin
+      const total_expenses = Object.values(expenses)
+          .map(v => v ? parseFloat(v) || 0 : 0) // Muutetaan arvot numeroiksi tai asetetaan 0, jos tyhjä
+          .reduce((a, b) => a + b, 0) // Summataan kaikki luvut
+          .toFixed(2); // Pyöristetään 2 desimaaliin
+      
+      // Tallennetaan budjetti tietokantaan
+      const result = await pool.query(
+          `INSERT INTO budgets (
+              user_id, kuukausi, vuosi, 
+              suunniteltu_tulot, toteutunut_tulot, 
+              suunniteltu_menot, toteutunut_menot, 
+              created_at, updated_at
+          ) 
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+          RETURNING *`,
+          [
+              user_id, 
+              month, 
+              year, 
+              income !== undefined && income !== "" ? parseFloat(income) : null, // NULL jos tyhjä
+              actualIncome !== undefined && actualIncome !== "" ? parseFloat(actualIncome) : null, // NULL jos tyhjä
+              total_expenses !== undefined && total_expenses !== "" ? parseFloat(total_expenses) : null, // NULL jos tyhjä
+              0, // Toteutuneet menot oletuksena 0 (voit myös muuttaa null)
+              new Date(), 
+              new Date()
+          ]
+        );
+
+        res.status(201).json({ success: true, budget: result.rows[0] });
+
+  } catch (error) {
+      console.error("❌ Virhe tallennettaessa budjettia:", error.message);
+      res.status(500).json({ error: 'Tietokantavirhe' });
+  }
+});
+
+// TÄMÄ LISÄTTY TESTINÄ!!!
+app.post('/api/transactions', authenticateToken, async (req, res) => {
+  try {
+      const { budget_id, tyyppi, summa, kuvaus } = req.body;
+      const user_id = req.user.id; // Haetaan käyttäjän ID tokenista
+
+      // Tarkistetaan, että kaikki pakolliset kentät on annettu
+      if (!budget_id || !tyyppi || summa === undefined || kuvaus === undefined) {
+          return res.status(400).json({ error: "Kaikki kentät ovat pakollisia" });
+      }
+
+      const result = await pool.query(
+          `INSERT INTO transactions (budget_id, user_id, tyyppi, summa, kuvaus, created_at, updated_at) 
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) 
+           RETURNING *`,
+          [budget_id, user_id, tyyppi, summa, kuvaus]
+      );
+
+      res.status(201).json({ success: true, transaction: result.rows[0] });
+  } catch (error) {
+      console.error("❌ Virhe lisättäessä tapahtumaa:", error.message);
+      res.status(500).json({ error: "Tietokantavirhe" });
+  }
+});
+// PÄÄTTYEN TÄHÄN!!!
+
 // **Päivitä käyttäjän tiedot (validoinnilla)**
 app.put('/users/:id', [
   body('name').notEmpty().withMessage('Nimi ei voi olla tyhjä'),
@@ -212,25 +296,128 @@ app.put('/users/:id', [
   }
 });
 
-// **Poista käyttäjä (vain kirjautuneille)**
-app.delete('/users/:id', authenticateToken, async (req, res) => {
-  const { id } = req.params;
+// **Poista kirjautunut käyttäjä (vain itsensä)**
+app.delete('/me', authenticateToken, async (req, res) => {
+  const userId = req.user.id; // Haetaan käyttäjän ID tokenista
 
   try {
-    const result = await pool.query('DELETE FROM public."users" WHERE id = $1 RETURNING *', [id]);
+    // Poistetaan käyttäjä tietokannasta
+    const result = await pool.query('DELETE FROM public."users" WHERE id = $1 RETURNING *', [userId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: "Käyttäjää ei löydy" });
     }
 
-    res.json({ success: true, message: "Käyttäjä poistettu", user: result.rows[0] });
+    res.json({ success: true, message: "Käyttäjätiedot poistettu onnistuneesti" });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error("❌ Virhe käyttäjän poistamisessa:", error.message);
+    res.status(500).json({ success: false, error: "Virhe käyttäjän poistamisessa" });
+  }
+});
+
+// **Poista budjetti**
+app.delete('/api/budgets/:id', authenticateToken, async (req, res) => {
+  try {
+      const { id } = req.params;
+      const userId = req.user.id; // Käyttäjän ID tokenista
+
+      // Tarkistetaan, kuuluuko budjetti käyttäjälle
+      const result = await pool.query(
+          'DELETE FROM budgets WHERE id = $1 AND user_id = $2 RETURNING *',
+          [id, userId]
+      );
+
+      if (result.rows.length === 0) {
+          return res.status(404).json({ success: false, error: "Budjettia ei löytynyt tai sinulla ei ole oikeuksia poistaa sitä" });
+      }
+
+      res.json({ success: true, message: "Budjetti poistettu onnistuneesti" });
+
+  } catch (error) {
+      console.error("❌ Virhe budjetin poistamisessa:", error.message);
+      res.status(500).json({ success: false, error: "Virhe budjetin poistamisessa" });
+  }
+});
+
+// **Hae kaikki budjetit (vain kirjautuneille käyttäjille)**
+app.get('/api/budgets', authenticateToken, async (req, res) => {
+  try {
+      const result = await pool.query(
+          'SELECT id, user_id, kuukausi AS month, vuosi AS year, suunniteltu_tulot AS income, suunniteltu_menot AS expenses FROM budgets WHERE user_id = $1 ORDER BY created_at DESC', 
+          [req.user.id]
+      );
+
+      res.json(result.rows.map(budget => ({
+          ...budget,
+          total: budget.income - budget.expenses // Lasketaan budjetin saldo
+      })));
+  } catch (error) {
+      console.error("❌ Virhe budjettien hakemisessa:", error.message);
+      res.status(500).json({ success: false, error: "Virhe budjettien hakemisessa" });
+  }
+});
+
+app.get('/api/categories', async (req, res) => {
+  try {
+      const result = await pool.query('SELECT * FROM categories ORDER BY id ASC');
+      res.json(result.rows);
+  } catch (error) {
+      console.error("❌ Virhe haettaessa kategorioita:", error);
+      res.status(500).json({ error: "Tietokantavirhe" });
+  }
+});
+
+// TÄMÄ LISÄTTY TESTINÄ!!!
+app.get("/api/transactions/:budgetId", async (req, res) => {
+  const { budgetId } = req.params;
+  
+  try {
+    const transactions = await pool.query(
+      "SELECT * FROM transactions WHERE budget_id = $1",
+      [budgetId]
+    );
+    res.json(transactions.rows);
+  } catch (error) {
+    console.error("❌ Virhe haettaessa tapahtumia:", error);
+    res.status(500).json({ error: "Virhe haettaessa tapahtumia" });
+  }
+});
+// TESTI PÄÄTTYY TÄHÄN!!!
+
+// **Hae yksittäinen budjetti ID:llä**
+app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id; // Haetaan käyttäjän ID tokenista
+
+    console.log("🔍 Haetaan budjetti ID:", id, "käyttäjälle", userId); 
+
+    // 🔹 Haetaan budjetin perustiedot
+    const budgetResult = await pool.query(
+      `SELECT id, user_id, kuukausi AS month, vuosi AS year, 
+              suunniteltu_tulot AS income, toteutunut_tulot AS actual_income, 
+              suunniteltu_menot AS planned_expenses, toteutunut_menot AS actual_expenses
+      FROM budgets 
+      WHERE id = $1 AND user_id = $2`, 
+      [id, userId]
+    );
+
+    console.log("✅ Budjetti haettu onnistuneesti:", budgetResult.rows); // OIKEASSA PAIKASSA NYT
+
+    // Jos budjettia ei löytynyt tai käyttäjällä ei ole oikeuksia
+    if (budgetResult.rows.length === 0) {
+      return res.status(404).json({ error: "Budjettia ei löytynyt tai sinulla ei ole oikeuksia nähdä sitä" });
+    }
+
+    // Palautetaan pelkkä budjetin data ilman "expenses"-taulua
+    res.json(budgetResult.rows[0]); 
+
+  } catch (error) {
+    console.error("❌ Virhe haettaessa budjettia:", error.message);
+    res.status(500).json({ error: "Virhe budjetin hakemisessa" });
   }
 });
 
 // **Aseta palvelimen portti**
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
-
