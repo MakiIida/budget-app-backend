@@ -16,7 +16,7 @@ app.use(express.json());
 
 const secretKey = process.env.JWT_SECRET;
 if (!secretKey) {
-    console.error("❌ JWT_SECRET puuttuu ympäristömuuttujista!");
+    console.error(" JWT_SECRET puuttuu ympäristömuuttujista!");
     process.exit(1);
 }
 
@@ -101,7 +101,7 @@ app.post('/register', [
     res.status(201).json({ success: true, user: result.rows[0] });
 
   } catch (error) {
-    console.error("❌ Virhe rekisteröinnissä:", error.message);
+    console.error(" Virhe rekisteröinnissä:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -128,7 +128,7 @@ app.post('/login', async (req, res) => {
 
       res.json({ success: true, token });
   } catch (error) {
-      console.error("❌ Virhe kirjautumisessa:", error.message);
+      console.error(" Virhe kirjautumisessa:", error.message);
       res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -139,7 +139,7 @@ app.get('/users', authenticateToken, async (req, res) => {
     const result = await pool.query('SELECT id, name, email, created_at FROM public."users"');
     res.json(result.rows);
   } catch (error) {
-    console.error("❌ Virhe haettaessa käyttäjiä:", error.message);
+    console.error(" Virhe haettaessa käyttäjiä:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -155,7 +155,7 @@ app.get('/me', authenticateToken, async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (error) {
-    console.error("❌ Virhe käyttäjän hakemisessa:", error.message);
+    console.error(" Virhe käyttäjän hakemisessa:", error.message);
     res.status(500).json({ error: "Virhe käyttäjän hakemisessa" });
   }
 });
@@ -178,7 +178,7 @@ app.post('/users', [
     );
     res.json({ success: true, user: result.rows[0] });
   } catch (error) {
-    console.error("❌ Virhe lisättäessä käyttäjää:", error.message);
+    console.error(" Virhe lisättäessä käyttäjää:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -205,7 +205,7 @@ app.post('/api/budgets', authenticateToken, async (req, res) => {
       }
 
       // Lasketaan menojen kokonaismäärä ja pyöristetään 2 desimaaliin
-      const total_expenses = Object.values(expenses)
+      const actual_expenses = Object.values(expenses)
           .map(v => v ? parseFloat(v) || 0 : 0) // Muutetaan arvot numeroiksi tai asetetaan 0, jos tyhjä
           .reduce((a, b) => a + b, 0) // Summataan kaikki luvut
           .toFixed(2); // Pyöristetään 2 desimaaliin
@@ -226,7 +226,7 @@ app.post('/api/budgets', authenticateToken, async (req, res) => {
               year, 
               income !== undefined && income !== "" ? parseFloat(income) : null, // NULL jos tyhjä
               actualIncome !== undefined && actualIncome !== "" ? parseFloat(actualIncome) : null, // NULL jos tyhjä
-              total_expenses !== undefined && total_expenses !== "" ? parseFloat(total_expenses) : null, // NULL jos tyhjä
+              actual_expenses !== undefined && actual_expenses !== "" ? parseFloat(actual_expenses) : null, // NULL jos tyhjä
               0, // Toteutuneet menot oletuksena 0 (voit myös muuttaa null)
               new Date(), 
               new Date()
@@ -236,7 +236,7 @@ app.post('/api/budgets', authenticateToken, async (req, res) => {
         res.status(201).json({ success: true, budget: result.rows[0] });
 
   } catch (error) {
-      console.error("❌ Virhe tallennettaessa budjettia:", error.message);
+      console.error(" Virhe tallennettaessa budjettia:", error.message);
       res.status(500).json({ error: 'Tietokantavirhe' });
   }
 });
@@ -261,7 +261,7 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
 
       res.status(201).json({ success: true, transaction: result.rows[0] });
   } catch (error) {
-      console.error("❌ Virhe lisättäessä tapahtumaa:", error.message);
+      console.error(" Virhe lisättäessä tapahtumaa:", error.message);
       res.status(500).json({ error: "Tietokantavirhe" });
   }
 });
@@ -296,6 +296,38 @@ app.put('/users/:id', [
   }
 });
 
+app.put('/api/budgets/:id', authenticateToken, async (req, res) => {
+  console.log("Received PUT request for budget ID:", req.params.id);
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const { income, planned_expenses, actual_expenses } = req.body;
+
+    // Tarkistetaan, kuuluuko budjetti käyttäjälle
+    const checkBudget = await pool.query(
+      `SELECT id FROM budgets WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
+
+    if (checkBudget.rows.length === 0) {
+      return res.status(404).json({ error: "Budjettia ei löytynyt tai ei oikeuksia" });
+    }
+
+    // Päivitetään budjetin tiedot
+    const updateBudget = await pool.query(
+      `UPDATE budgets 
+       SET suunniteltu_tulot = $1, suunniteltu_menot = $2, toteutunut_menot = $3
+       WHERE id = $4 AND user_id = $5`,
+      [income, planned_expenses, actual_expenses, id, userId]
+    );
+
+    res.json({ message: "Budjetti päivitetty onnistuneesti" });
+  } catch (error) {
+    console.error(" Virhe budjetin päivittämisessä:", error.message);
+    res.status(500).json({ error: "Palvelinvirhe budjetin päivittämisessä" });
+  }
+});
+
 // **Poista kirjautunut käyttäjä (vain itsensä)**
 app.delete('/me', authenticateToken, async (req, res) => {
   const userId = req.user.id; // Haetaan käyttäjän ID tokenista
@@ -310,7 +342,7 @@ app.delete('/me', authenticateToken, async (req, res) => {
 
     res.json({ success: true, message: "Käyttäjätiedot poistettu onnistuneesti" });
   } catch (error) {
-    console.error("❌ Virhe käyttäjän poistamisessa:", error.message);
+    console.error(" Virhe käyttäjän poistamisessa:", error.message);
     res.status(500).json({ success: false, error: "Virhe käyttäjän poistamisessa" });
   }
 });
@@ -334,7 +366,7 @@ app.delete('/api/budgets/:id', authenticateToken, async (req, res) => {
       res.json({ success: true, message: "Budjetti poistettu onnistuneesti" });
 
   } catch (error) {
-      console.error("❌ Virhe budjetin poistamisessa:", error.message);
+      console.error(" Virhe budjetin poistamisessa:", error.message);
       res.status(500).json({ success: false, error: "Virhe budjetin poistamisessa" });
   }
 });
@@ -343,16 +375,35 @@ app.delete('/api/budgets/:id', authenticateToken, async (req, res) => {
 app.get('/api/budgets', authenticateToken, async (req, res) => {
   try {
       const result = await pool.query(
-          'SELECT id, user_id, kuukausi AS month, vuosi AS year, suunniteltu_tulot AS income, suunniteltu_menot AS expenses FROM budgets WHERE user_id = $1 ORDER BY created_at DESC', 
+          `SELECT 
+              b.id, 
+              b.user_id, 
+              b.kuukausi AS month, 
+              b.vuosi AS year, 
+              b.toteutunut_tulot AS income, 
+              b.suunniteltu_menot AS expenses, 
+              b.toteutunut_menot AS actual_expenses,
+              -- Lasketaan kaikki tapahtumat budjettiin liittyen
+              COALESCE(SUM(CASE WHEN t.tyyppi = 'tulo' THEN t.summa ELSE 0 END), 0) AS transaction_income,
+              COALESCE(SUM(CASE WHEN t.tyyppi = 'meno' THEN t.summa ELSE 0 END), 0) AS transaction_expenses
+          FROM budgets b
+          LEFT JOIN transactions t ON b.id = t.budget_id
+          WHERE b.user_id = $1 
+          GROUP BY b.id, b.user_id, b.kuukausi, b.vuosi, b.toteutunut_tulot, b.suunniteltu_menot, b.toteutunut_menot
+          ORDER BY b.kuukausi ASC`,
           [req.user.id]
       );
 
       res.json(result.rows.map(budget => ({
           ...budget,
-          total: budget.income - budget.expenses // Lasketaan budjetin saldo
+          actual_income: Number(budget.income || 0) + Number(budget.transaction_income || 0), // Lasketaan tulot yhteen
+          actual_expenses: Number(budget.expenses || 0) + Number(budget.transaction_expenses || 0), // Lasketaan menot yhteen
+          total: (Number(budget.income || 0) + Number(budget.transaction_income || 0)) - 
+                 (Number(budget.actual_expenses || 0) + Number(budget.transaction_expenses || 0)) // Lasketaan saldo
       })));
+
   } catch (error) {
-      console.error("❌ Virhe budjettien hakemisessa:", error.message);
+      console.error("Virhe budjettien hakemisessa:", error.message);
       res.status(500).json({ success: false, error: "Virhe budjettien hakemisessa" });
   }
 });
@@ -362,12 +413,12 @@ app.get('/api/categories', async (req, res) => {
       const result = await pool.query('SELECT * FROM categories ORDER BY id ASC');
       res.json(result.rows);
   } catch (error) {
-      console.error("❌ Virhe haettaessa kategorioita:", error);
+      console.error(" Virhe haettaessa kategorioita:", error);
       res.status(500).json({ error: "Tietokantavirhe" });
   }
 });
 
-// TÄMÄ LISÄTTY TESTINÄ!!!
+// 
 app.get("/api/transactions/:budgetId", async (req, res) => {
   const { budgetId } = req.params;
   
@@ -378,45 +429,118 @@ app.get("/api/transactions/:budgetId", async (req, res) => {
     );
     res.json(transactions.rows);
   } catch (error) {
-    console.error("❌ Virhe haettaessa tapahtumia:", error);
+    console.error(" Virhe haettaessa tapahtumia:", error);
     res.status(500).json({ error: "Virhe haettaessa tapahtumia" });
   }
 });
-// TESTI PÄÄTTYY TÄHÄN!!!
 
 // **Hae yksittäinen budjetti ID:llä**
 app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id; // Haetaan käyttäjän ID tokenista
+    const userId = req.user.id; 
 
     console.log("🔍 Haetaan budjetti ID:", id, "käyttäjälle", userId); 
 
-    // 🔹 Haetaan budjetin perustiedot
+    // 🔹 Haetaan budjetin perustiedot, mukaan lukien expenses
     const budgetResult = await pool.query(
       `SELECT id, user_id, kuukausi AS month, vuosi AS year, 
               suunniteltu_tulot AS income, toteutunut_tulot AS actual_income, 
-              suunniteltu_menot AS planned_expenses, toteutunut_menot AS actual_expenses
+              suunniteltu_menot AS planned_expenses, 
+              toteutunut_menot AS actual_expenses, 
+              suunniteltu_menot AS expenses
       FROM budgets 
       WHERE id = $1 AND user_id = $2`, 
       [id, userId]
     );
 
-    console.log("✅ Budjetti haettu onnistuneesti:", budgetResult.rows); // OIKEASSA PAIKASSA NYT
-
-    // Jos budjettia ei löytynyt tai käyttäjällä ei ole oikeuksia
     if (budgetResult.rows.length === 0) {
       return res.status(404).json({ error: "Budjettia ei löytynyt tai sinulla ei ole oikeuksia nähdä sitä" });
     }
 
-    // Palautetaan pelkkä budjetin data ilman "expenses"-taulua
-    res.json(budgetResult.rows[0]); 
+    const budget = budgetResult.rows[0];
+
+    // 🔹 Haetaan meno-tapahtumien yhteissumma budjetille
+    const transactionExpensesResult = await pool.query(
+      `SELECT COALESCE(SUM(summa), 0) AS transaction_expenses
+       FROM transactions WHERE budget_id = $1 AND tyyppi = 'meno'`,
+      [id]
+    );
+
+    const transaction_expenses = transactionExpensesResult.rows[0].transaction_expenses || 0;
+
+    // 🔹 Haetaan tulo-tapahtumien yhteissumma budjetille
+    const transactionIncomeResult = await pool.query(
+      `SELECT COALESCE(SUM(summa), 0) AS transaction_income
+       FROM transactions WHERE budget_id = $1 AND tyyppi = 'tulo'`,
+      [id]
+    );
+
+    const transaction_income = transactionIncomeResult.rows[0].transaction_income || 0;
+
+    console.log("💰 Lasketut meno-tapahtumat:", transaction_expenses);
+    console.log("💰 Lasketut tulo-tapahtumat:", transaction_income);
+
+    // 🔹 Lasketaan oikea actual_expenses ja actual_income
+    const actual_expenses =
+      Number(budget.expenses || 0) + // Lisää expenses (suunnitellut menot)
+      Number(transaction_expenses || 0); // Lisää transaction_expenses (tapahtumat)
+
+    const actual_income =
+      Number(budget.actual_income || 0) + // Lisää actual_income (budjetin oletetut tulot)
+      Number(transaction_income || 0); // Lisää transaction_income (tapahtumat)
+
+    console.log("📊 Lopulliset toteutuneet menot:", actual_expenses);
+    console.log("📊 Lopulliset toteutuneet tulot:", actual_income);
+
+    res.json({
+      ...budget,
+      transaction_expenses,
+      transaction_income,
+      actual_expenses,
+      actual_income
+    });
 
   } catch (error) {
-    console.error("❌ Virhe haettaessa budjettia:", error.message);
+    console.error(" Virhe haettaessa budjettia:", error.message);
     res.status(500).json({ error: "Virhe budjetin hakemisessa" });
   }
 });
+
+
+
+// app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const userId = req.user.id; // Haetaan käyttäjän ID tokenista
+
+//     console.log(" Haetaan budjetti ID:", id, "käyttäjälle", userId); 
+
+//     // Haetaan budjetin perustiedot
+//     const budgetResult = await pool.query(
+//       `SELECT id, user_id, kuukausi AS month, vuosi AS year, 
+//               suunniteltu_tulot AS income, toteutunut_tulot AS actual_income, 
+//               suunniteltu_menot AS planned_expenses, toteutunut_menot AS actual_expenses
+//       FROM budgets 
+//       WHERE id = $1 AND user_id = $2`, 
+//       [id, userId]
+//     );
+
+//     console.log(" Budjetti haettu onnistuneesti:", budgetResult.rows); // OIKEASSA PAIKASSA NYT
+
+//     // Jos budjettia ei löytynyt tai käyttäjällä ei ole oikeuksia
+//     if (budgetResult.rows.length === 0) {
+//       return res.status(404).json({ error: "Budjettia ei löytynyt tai sinulla ei ole oikeuksia nähdä sitä" });
+//     }
+
+//     // Palautetaan pelkkä budjetin data ilman "expenses"-taulua
+//     res.json(budgetResult.rows[0]); 
+
+//   } catch (error) {
+//     console.error(" Virhe haettaessa budjettia:", error.message);
+//     res.status(500).json({ error: "Virhe budjetin hakemisessa" });
+//   }
+// });
 
 // **Aseta palvelimen portti**
 const PORT = process.env.PORT || 5000;
