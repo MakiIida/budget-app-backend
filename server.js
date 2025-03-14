@@ -1,8 +1,7 @@
 require('dotenv').config(); // Lataa ympäristömuuttujat
-console.log("DATABASE_URL:", process.env.DATABASE_URL); // Tarkista, latautuuko se oikein
 
-const express = require('express');
-const cors = require('cors');
+const express = require('express'); // Ladataan Express.js
+const cors = require('cors'); // Otetaan käyttöön CORS
 const { Pool } = require('pg'); // PostgreSQL-yhteys
 const { body, validationResult } = require('express-validator'); // Validointi
 const bcrypt = require('bcryptjs'); // Salasanojen hashaus
@@ -11,8 +10,6 @@ const jwt = require('jsonwebtoken'); // Tokenien luominen
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// const secretKey = process.env.JWT_SECRET || "salainen_avain"; // JWT-salasana
 
 const secretKey = process.env.JWT_SECRET;
 if (!secretKey) {
@@ -23,24 +20,24 @@ if (!secretKey) {
 // Luo tietokantayhteys Renderiin
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Render vaatii SSL-yhteyden
+  ssl: { rejectUnauthorized: false }
 });
 
-// **Testataan tietokantayhteys heti palvelimen käynnistyessä**
+// Testataan tietokantayhteys heti palvelimen käynnistyessä
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
-    console.error("⚠️ Tietokantayhteys epäonnistui:", err.message);
+    console.error("Tietokantayhteys epäonnistui:", err.message);
   } else {
-    console.log("✅ Tietokantayhteys toimii! Aika:", res.rows[0].now);
+    console.log("Tietokantayhteys toimii! Aika:", res.rows[0].now);
   }
 });
 
-// **Pääreitti**
+// Pääreitti
 app.get('/', (req, res) => {
   res.send('Budjettisovellus API toimii!');
 });
 
-// **Testaa tietokantayhteyttä selaimessa**
+// Testaa tietokantayhteyttä selaimessa
 app.get('/test-db', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -50,63 +47,50 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
-// **Middleware JWT-tokenin tarkistukseen**
+// Middleware JWT-tokenin tarkistukseen
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-      return res.status(401).json({ success: false, error: "Pääsy estetty: Token puuttuu" });
+  const token = req.header("Authorization")?.split(" ")[1];
+
+  if (!token) {
+      return res.status(403).json({ error: "Ei lupaa, kirjautuminen vaaditaan." });
   }
 
-  const token = authHeader.split(' ')[1];
   jwt.verify(token, secretKey, (err, user) => {
       if (err) {
-          return res.status(403).json({ success: false, error: "Virheellinen token" });
+          return res.status(403).json({ error: "Virheellinen token." });
       }
-      console.log("JWT-käyttäjä:", user);
       req.user = user;
       next();
   });
 };
 
-// **Rekisteröi uusi käyttäjä**
-app.post('/register', [
-  body('name').notEmpty().withMessage('Nimi ei voi olla tyhjä'),
-  body('email').isEmail().withMessage('Anna kelvollinen sähköpostiosoite'),
-  body('password').isLength({ min: 6 }).withMessage('Salasanan tulee olla vähintään 6 merkkiä pitkä')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, errors: errors.array() });
+// Rekisteröi uusi käyttäjä
+app.post("/register", async (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+      return res.status(400).json({ error: "Kaikki kentät ovat pakollisia!" });
   }
 
+  const hashedPassword = await bcrypt.hash(password, 10);
   try {
-    const { name, email, password } = req.body;
+      const result = await pool.query(
+          "INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email",
+          [name, email, hashedPassword]
+      );
 
-    // Tarkista, onko käyttäjä jo olemassa
-    const userExists = await pool.query('SELECT * FROM public."users" WHERE email = $1', [email]);
-    if (userExists.rows.length > 0) {
-      return res.status(400).json({ success: false, error: "Sähköposti on jo käytössä" });
-    }
+      const user = result.rows[0];
+      const token = jwt.sign({ id: user.id, email: user.email }, secretKey, { expiresIn: "1h" });
 
-    // Hashataan salasana
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    // Tallennetaan uusi käyttäjä tietokantaan
-    const result = await pool.query(
-      'INSERT INTO public."users" (name, email, password, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id, name, email, created_at',
-      [name, email, hashedPassword]
-    );
-
-    res.status(201).json({ success: true, user: result.rows[0] });
+      res.json({ token, user });
 
   } catch (error) {
-    console.error(" Virhe rekisteröinnissä:", error.message);
-    res.status(500).json({ success: false, error: error.message });
+      console.error("Virhe rekisteröinnissä:", error);
+      res.status(500).json({ error: "Käyttäjän luominen epäonnistui." });
   }
 });
 
-// **Kirjautuminen (POST /login)**
+// Kirjautuminen (POST /login)
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
@@ -133,7 +117,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// **Hae kaikki käyttäjät (vain kirjautuneille käyttäjille)**
+// Hae kaikki käyttäjät (vain kirjautuneille käyttäjille)
 app.get('/users', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query('SELECT id, name, email, created_at FROM public."users"');
@@ -144,23 +128,24 @@ app.get('/users', authenticateToken, async (req, res) => {
   }
 });
 
-// **Hae kirjautunut käyttäjä (/me-reitti)**
-app.get('/me', authenticateToken, async (req, res) => {
+// Hae kirjautunut käyttäjä (/me-reitti)
+app.get("/me", authenticateToken, async (req, res) => {
   try {
-    console.log("Kirjautuneen käyttäjän ID:", req.user.id);
-    const result = await pool.query('SELECT id, name, email FROM public."users" WHERE id = $1', [req.user.id]);
-    console.log("Käyttäjän tietokanta vastaus:", result.rows);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Käyttäjää ei löydy" });
-    }
-    res.json(result.rows[0]);
+      const userId = req.user.id;
+      const result = await pool.query("SELECT id, name, email FROM users WHERE id = $1", [userId]);
+
+      if (result.rows.length === 0) {
+          return res.status(404).json({ error: "Käyttäjää ei löydy." });
+      }
+
+      res.json(result.rows[0]);
   } catch (error) {
-    console.error(" Virhe käyttäjän hakemisessa:", error.message);
-    res.status(500).json({ error: "Virhe käyttäjän hakemisessa" });
+      console.error("Virhe haettaessa käyttäjätietoja:", error);
+      res.status(500).json({ error: "Käyttäjätietojen hakeminen epäonnistui." });
   }
 });
 
-// **Lisää uusi käyttäjä (validoinnilla)**
+// Lisää uusi käyttäjä (validoinnilla)
 app.post('/users', [
   body('name').notEmpty().withMessage('Nimi ei voi olla tyhjä'),
   body('email').isEmail().withMessage('Anna kelvollinen sähköpostiosoite')
@@ -183,7 +168,7 @@ app.post('/users', [
   }
 });
 
-// **Lisää käyttäjän tulot ja menot**
+// Lisää käyttäjän tulot ja menot
 app.post('/api/budgets', authenticateToken, async (req, res) => {
   try {
       // Haetaan tiedot pyynnöstä
@@ -204,7 +189,7 @@ app.post('/api/budgets', authenticateToken, async (req, res) => {
         return res.status(400).json({ success: false, error: "Budjetti tälle kuukaudelle on jo olemassa" });
       }
 
-      // Lasketaan menojen kokonaismäärä ja pyöristetään 2 desimaaliin
+      // Lasketaan menojen kokonaismäärä
       const actual_expenses = Object.values(expenses)
           .map(v => v ? parseFloat(v) || 0 : 0) // Muutetaan arvot numeroiksi tai asetetaan 0, jos tyhjä
           .reduce((a, b) => a + b, 0) // Summataan kaikki luvut
@@ -224,10 +209,10 @@ app.post('/api/budgets', authenticateToken, async (req, res) => {
               user_id, 
               month, 
               year, 
-              income !== undefined && income !== "" ? parseFloat(income) : null, // NULL jos tyhjä
-              actualIncome !== undefined && actualIncome !== "" ? parseFloat(actualIncome) : null, // NULL jos tyhjä
-              actual_expenses !== undefined && actual_expenses !== "" ? parseFloat(actual_expenses) : null, // NULL jos tyhjä
-              0, // Toteutuneet menot oletuksena 0 (voit myös muuttaa null)
+              income !== undefined && income !== "" ? parseFloat(income) : null, // NULL, jos tyhjä
+              actualIncome !== undefined && actualIncome !== "" ? parseFloat(actualIncome) : null, // NULL, jos tyhjä
+              actual_expenses !== undefined && actual_expenses !== "" ? parseFloat(actual_expenses) : null, // NULL, jos tyhjä
+              0, // Toteutuneet menot oletuksena 0
               new Date(), 
               new Date()
           ]
@@ -241,7 +226,7 @@ app.post('/api/budgets', authenticateToken, async (req, res) => {
   }
 });
 
-// TÄMÄ LISÄTTY TESTINÄ!!!
+// Lisätään uusi tapahtuma tietokantaan
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
       const { budget_id, tyyppi, summa, kuvaus } = req.body;
@@ -265,9 +250,8 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
       res.status(500).json({ error: "Tietokantavirhe" });
   }
 });
-// PÄÄTTYEN TÄHÄN!!!
 
-// **Päivitä käyttäjän tiedot (validoinnilla)**
+// Päivitä käyttäjän tiedot (validoinnilla)
 app.put('/users/:id', [
   body('name').notEmpty().withMessage('Nimi ei voi olla tyhjä'),
   body('email').isEmail().withMessage('Anna kelvollinen sähköpostiosoite')
@@ -296,12 +280,14 @@ app.put('/users/:id', [
   }
 });
 
+// Päivitetään käyttäjän budjetin tiedot (tulot ja menot)
 app.put('/api/budgets/:id', authenticateToken, async (req, res) => {
   console.log("Received PUT request for budget ID:", req.params.id);
+
   try {
     const { id } = req.params;
     const userId = req.user.id;
-    const { income, planned_expenses, actual_expenses } = req.body;
+    const { toteutunut_tulot, suunniteltu_menot, toteutunut_menot } = req.body;
 
     // Tarkistetaan, kuuluuko budjetti käyttäjälle
     const checkBudget = await pool.query(
@@ -313,41 +299,48 @@ app.put('/api/budgets/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: "Budjettia ei löytynyt tai ei oikeuksia" });
     }
 
+    // Asetetaan NULL-arvoille oletusarvot
+    const validPlannedExpenses = suunniteltu_menot !== null ? suunniteltu_menot : 0;
+    const validActualExpenses = toteutunut_menot !== null ? toteutunut_menot : 0;
+
     // Päivitetään budjetin tiedot
     const updateBudget = await pool.query(
       `UPDATE budgets 
-       SET suunniteltu_tulot = $1, suunniteltu_menot = $2, toteutunut_menot = $3
-       WHERE id = $4 AND user_id = $5`,
-      [income, planned_expenses, actual_expenses, id, userId]
+       SET toteutunut_tulot = $1, suunniteltu_menot = $2, toteutunut_menot = $3
+       WHERE id = $4 AND user_id = $5
+       RETURNING *`,
+       [toteutunut_tulot, validPlannedExpenses, validActualExpenses, id, userId]
     );
 
-    res.json({ message: "Budjetti päivitetty onnistuneesti" });
+    res.json({ message: "Budjetti päivitetty onnistuneesti", budget: updateBudget.rows[0] });
+
   } catch (error) {
-    console.error(" Virhe budjetin päivittämisessä:", error.message);
+    console.error("Virhe budjetin päivittämisessä:", error.message);
     res.status(500).json({ error: "Palvelinvirhe budjetin päivittämisessä" });
   }
 });
 
-// **Poista kirjautunut käyttäjä (vain itsensä)**
-app.delete('/me', authenticateToken, async (req, res) => {
-  const userId = req.user.id; // Haetaan käyttäjän ID tokenista
-
+// Poista käyttäjätili pysyvästi
+app.delete("/api/users/me", authenticateToken, async (req, res) => {
   try {
-    // Poistetaan käyttäjä tietokannasta
-    const result = await pool.query('DELETE FROM public."users" WHERE id = $1 RETURNING *', [userId]);
+    const userId = req.user.id; // Haetaan käyttäjän ID tokenista
+
+    // Poistetaan käyttäjän tiedot
+    const result = await pool.query("DELETE FROM users WHERE id = $1 RETURNING id", [userId]);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: "Käyttäjää ei löydy" });
+      return res.status(404).json({ error: "Käyttäjää ei löydy." });
     }
 
-    res.json({ success: true, message: "Käyttäjätiedot poistettu onnistuneesti" });
+    res.json({ success: true, message: "Tilisi on poistettu pysyvästi." });
+
   } catch (error) {
-    console.error(" Virhe käyttäjän poistamisessa:", error.message);
-    res.status(500).json({ success: false, error: "Virhe käyttäjän poistamisessa" });
+    console.error("Virhe tilin poistamisessa:", error);
+    res.status(500).json({ error: "Virhe tilin poistamisessa." });
   }
 });
 
-// **Poista budjetti**
+// Poista budjetti
 app.delete('/api/budgets/:id', authenticateToken, async (req, res) => {
   try {
       const { id } = req.params;
@@ -371,7 +364,7 @@ app.delete('/api/budgets/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// **Hae kaikki budjetit (vain kirjautuneille käyttäjille)**
+// Haetaan kaikki budjetit (vain kirjautuneille käyttäjille)
 app.get('/api/budgets', authenticateToken, async (req, res) => {
   try {
       const result = await pool.query(
@@ -418,7 +411,7 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// 
+// Haetaan budjettiin liittyvät tapahtumat budjetin ID:n perusteella
 app.get("/api/transactions/:budgetId", async (req, res) => {
   const { budgetId } = req.params;
   
@@ -434,7 +427,51 @@ app.get("/api/transactions/:budgetId", async (req, res) => {
   }
 });
 
-// **Hae yksittäinen budjetti ID:llä**
+// Päivitä käyttäjän nimi tai salasana
+app.patch("/api/users/me", authenticateToken, async (req, res) => {
+  console.log("PATCH /api/users/me kutsuttu");
+  try {
+    const userId = req.user.id; // Haetaan käyttäjän ID tokenista
+    const { newUsername, newPassword } = req.body;
+
+    if (!newUsername && !newPassword) {
+      return res.status(400).json({ error: "Anna uusi käyttäjänimi tai salasana." });
+    }
+
+    let updateFields = [];
+    let values = [];
+    let index = 1;
+
+    if (newUsername) {
+      updateFields.push(`name = $${index}`);
+      values.push(newUsername);
+      index++;
+    }
+
+    if (newPassword) {
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      updateFields.push(`password = $${index}`);
+      values.push(hashedPassword);
+      index++;
+    }
+
+    values.push(userId);
+    const query = `UPDATE users SET ${updateFields.join(", ")} WHERE id = $${index} RETURNING name`;
+    const result = await pool.query(query, values);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Käyttäjää ei löydy." });
+    }
+
+    res.json({ success: true, username: result.rows[0].name });
+
+  } catch (error) {
+    console.error("Virhe päivitettäessä käyttäjätietoja:", error);
+    res.status(500).json({ error: "Virhe päivitettäessä käyttäjätietoja." });
+  }
+});
+
+// Haetaan yksittäinen budjetti ID:llä
 app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -442,7 +479,7 @@ app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
 
     console.log("🔍 Haetaan budjetti ID:", id, "käyttäjälle", userId); 
 
-    // 🔹 Haetaan budjetin perustiedot, mukaan lukien expenses
+    // Haetaan budjetin perustiedot
     const budgetResult = await pool.query(
       `SELECT id, user_id, kuukausi AS month, vuosi AS year, 
               suunniteltu_tulot AS income, toteutunut_tulot AS actual_income, 
@@ -460,7 +497,7 @@ app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
 
     const budget = budgetResult.rows[0];
 
-    // 🔹 Haetaan meno-tapahtumien yhteissumma budjetille
+    // Haetaan meno-tapahtumien yhteissumma budjetille
     const transactionExpensesResult = await pool.query(
       `SELECT COALESCE(SUM(summa), 0) AS transaction_expenses
        FROM transactions WHERE budget_id = $1 AND tyyppi = 'meno'`,
@@ -469,7 +506,7 @@ app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
 
     const transaction_expenses = transactionExpensesResult.rows[0].transaction_expenses || 0;
 
-    // 🔹 Haetaan tulo-tapahtumien yhteissumma budjetille
+    // Haetaan tulo-tapahtumien yhteissumma budjetille
     const transactionIncomeResult = await pool.query(
       `SELECT COALESCE(SUM(summa), 0) AS transaction_income
        FROM transactions WHERE budget_id = $1 AND tyyppi = 'tulo'`,
@@ -478,20 +515,20 @@ app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
 
     const transaction_income = transactionIncomeResult.rows[0].transaction_income || 0;
 
-    console.log("💰 Lasketut meno-tapahtumat:", transaction_expenses);
-    console.log("💰 Lasketut tulo-tapahtumat:", transaction_income);
+    console.log("Lasketut meno-tapahtumat:", transaction_expenses);
+    console.log("Lasketut tulo-tapahtumat:", transaction_income);
 
-    // 🔹 Lasketaan oikea actual_expenses ja actual_income
+    // Lasketaan tapahtumat
     const actual_expenses =
-      Number(budget.expenses || 0) + // Lisää expenses (suunnitellut menot)
-      Number(transaction_expenses || 0); // Lisää transaction_expenses (tapahtumat)
+      Number(budget.expenses || 0) +
+      Number(transaction_expenses || 0);
 
     const actual_income =
-      Number(budget.actual_income || 0) + // Lisää actual_income (budjetin oletetut tulot)
-      Number(transaction_income || 0); // Lisää transaction_income (tapahtumat)
+      Number(budget.actual_income || 0) +
+      Number(transaction_income || 0);
 
-    console.log("📊 Lopulliset toteutuneet menot:", actual_expenses);
-    console.log("📊 Lopulliset toteutuneet tulot:", actual_income);
+    console.log("Lopulliset toteutuneet menot:", actual_expenses);
+    console.log("Lopulliset toteutuneet tulot:", actual_income);
 
     res.json({
       ...budget,
@@ -507,41 +544,6 @@ app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
   }
 });
 
-
-
-// app.get('/api/budgets/:id', authenticateToken, async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const userId = req.user.id; // Haetaan käyttäjän ID tokenista
-
-//     console.log(" Haetaan budjetti ID:", id, "käyttäjälle", userId); 
-
-//     // Haetaan budjetin perustiedot
-//     const budgetResult = await pool.query(
-//       `SELECT id, user_id, kuukausi AS month, vuosi AS year, 
-//               suunniteltu_tulot AS income, toteutunut_tulot AS actual_income, 
-//               suunniteltu_menot AS planned_expenses, toteutunut_menot AS actual_expenses
-//       FROM budgets 
-//       WHERE id = $1 AND user_id = $2`, 
-//       [id, userId]
-//     );
-
-//     console.log(" Budjetti haettu onnistuneesti:", budgetResult.rows); // OIKEASSA PAIKASSA NYT
-
-//     // Jos budjettia ei löytynyt tai käyttäjällä ei ole oikeuksia
-//     if (budgetResult.rows.length === 0) {
-//       return res.status(404).json({ error: "Budjettia ei löytynyt tai sinulla ei ole oikeuksia nähdä sitä" });
-//     }
-
-//     // Palautetaan pelkkä budjetin data ilman "expenses"-taulua
-//     res.json(budgetResult.rows[0]); 
-
-//   } catch (error) {
-//     console.error(" Virhe haettaessa budjettia:", error.message);
-//     res.status(500).json({ error: "Virhe budjetin hakemisessa" });
-//   }
-// });
-
-// **Aseta palvelimen portti**
+// Aseta palvelimen portti
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
